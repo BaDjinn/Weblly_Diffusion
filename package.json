@@ -1,7 +1,7 @@
 {
-  "name": "sd-turbo",
+  "name": "Weblly",
   "version": "0.0.0",
-  "description": "onnxruntime sd-turbo example",
+  "description": "based on onnxruntime sd-turbo example",
   "main": "index.js",
   "type": "module",
   "scripts": {
