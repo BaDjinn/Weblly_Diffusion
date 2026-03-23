@@ -5,6 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Weblly Diffusion - Face Anonymizer</title>
+
   <style>
     :root {
       --bg: #111827;
@@ -136,6 +137,7 @@
       font-size: 0.9rem;
       color: var(--muted);
       line-height: 1.5;
+      white-space: pre-line;
     }
 
     .hint {
@@ -170,11 +172,11 @@
 
 <body>
   <div class="app">
-    <h1>Face Anonymizer — PATCH 1</h1>
+    <h1>Face Anonymizer — PATCH 2B</h1>
+
     <div class="subtitle">
-      Upload di un’immagine, rilevamento volto, crop, trasformazione del volto e reinserimento nell’immagine originale.
-      In questa patch il volto viene anonimizzato con una trasformazione placeholder, pronta da sostituire con il vero
-      img2img SD‑Turbo nella patch successiva.
+      Bootstrap CDN-first per Netlify: face detection locale + runtime ONNX da CDN + hook per pipeline SD-Turbo con
+      WebGPU.
     </div>
 
     <div class="controls">
@@ -199,13 +201,13 @@
       <button id="resetBtn" disabled>Reset</button>
     </div>
 
-    <div class="status" id="status">Caricamento modelli face detection...</div>
+    <div class="status" id="status">Bootstrap runtime...</div>
 
     <div style="margin-bottom:16px;">
-      <span class="pill">1 volto</span>
-      <span class="pill">crop + blend</span>
-      <span class="pill">placeholder anonymization</span>
-      <span class="pill">hook pronto per SD‑Turbo img2img</span>
+      <span class="pill">CDN runtime</span>
+      <span class="pill">Netlify static models</span>
+      <span class="pill">WebGPU bootstrap</span>
+      <span class="pill">fallback placeholder</span>
     </div>
 
     <div class="grid">
@@ -223,16 +225,21 @@
     </div>
 
     <div class="hint">
-      Se la detection non trova il volto al primo colpo, prova con una foto più frontale o con il volto più grande
-      nell’inquadratura.
+      La PATCH 2B usa librerie runtime da CDN con versione fissa e tiene i modelli locali sotto /models per massima
+      compatibilità con Netlify.
     </div>
   </div>
 
-  <!-- face-api.js browser build -->
-  <!-- <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script> -->
-  <script src="/vendor/face-api.min.js"></script>
-  <!-- bundle webpack -->
-  <script type="module" defer src="/dist/index.js"></script>
+  <!-- face-api.js da CDN, versione fissata -->
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js" crossorigin="anonymous">
+  </script>
+
+  <!-- ONNX Runtime WebGPU da CDN, versione fissata -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.webgpu.min.js" crossorigin="anonymous">
+  </script>
+
+  <!-- app locale -->
+  <script type="module" src="/app.js"></script>
 </body>
 
 </html>
