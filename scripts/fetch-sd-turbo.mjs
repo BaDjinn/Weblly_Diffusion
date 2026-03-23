@@ -27,8 +27,6 @@ const FILES = [
 		],
 	},
 	{
-		// vae_encoder non è nel repo Microsoft originale sd-turbo-webnn:
-		// usiamo il fork che lo aggiunge esplicitamente
 		name: "vae_encoder/model.onnx",
 		urls: [
 			"https://huggingface.co/eyaler/sd-turbo-webnn/resolve/main/vae_encoder/model.onnx",
@@ -50,7 +48,7 @@ async function downloadWithFallback(urls, destPath) {
 
 	for (const url of urls) {
 		try {
-			console.log(`Downloading: ${url}`);
+			console.log(`[fetch-sd-turbo] Downloading: ${url}`);
 			const res = await fetch(url);
 
 			if (!res.ok) {
@@ -63,10 +61,10 @@ async function downloadWithFallback(urls, destPath) {
 			await mkdir(path.dirname(destPath), { recursive: true });
 			await writeFile(destPath, data);
 
-			console.log(`Saved: ${destPath}`);
+			console.log(`[fetch-sd-turbo] Saved: ${destPath}`);
 			return;
 		} catch (err) {
-			console.warn(`Failed: ${url} -> ${err.message}`);
+			console.warn(`[fetch-sd-turbo] Failed: ${url} -> ${err.message}`);
 			lastError = err;
 		}
 	}
@@ -75,21 +73,23 @@ async function downloadWithFallback(urls, destPath) {
 }
 
 async function main() {
+	await mkdir(DEST_BASE, { recursive: true });
+
 	for (const file of FILES) {
 		const destPath = path.join(DEST_BASE, file.name);
 
 		if (await exists(destPath)) {
-			console.log(`Skip existing: ${destPath}`);
+			console.log(`[fetch-sd-turbo] Skip existing: ${destPath}`);
 			continue;
 		}
 
 		await downloadWithFallback(file.urls, destPath);
 	}
 
-	console.log("SD-Turbo model fetch complete.");
+	console.log("[fetch-sd-turbo] SD-Turbo model fetch complete.");
 }
 
 main().catch((err) => {
-	console.error("fetch-sd-turbo failed:", err);
+	console.error("[fetch-sd-turbo] fatal error:", err);
 	process.exit(1);
 });

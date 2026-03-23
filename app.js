@@ -24,9 +24,30 @@ const inputCtx = inputCanvas.getContext("2d", { willReadFrequently: true });
 const outputCtx = outputCanvas.getContext("2d", { willReadFrequently: true });
 
 const FACE_MODEL_URL = "/models/face-api";
-const SD_MODEL_BASE = "/models/sd-turbo";
 const FACE_INPUT_SIZE = 512;
 const FACE_PADDING_RATIO = 0.28;
+
+const SD_MODEL_SOURCES = {
+	text_encoder: [
+		"/models/sd-turbo/text_encoder/model.onnx",
+		"https://huggingface.co/microsoft/sd-turbo-webnn/resolve/main/text_encoder/model.onnx",
+		"https://huggingface.co/webnn/sd-turbo-webnn/resolve/main/text_encoder/model.onnx",
+	],
+	unet: [
+		"/models/sd-turbo/unet/model.onnx",
+		"https://huggingface.co/microsoft/sd-turbo-webnn/resolve/main/unet/model.onnx",
+		"https://huggingface.co/webnn/sd-turbo-webnn/resolve/main/unet/model.onnx",
+	],
+	vae_decoder: [
+		"/models/sd-turbo/vae_decoder/model.onnx",
+		"https://huggingface.co/microsoft/sd-turbo-webnn/resolve/main/vae_decoder/model.onnx",
+		"https://huggingface.co/webnn/sd-turbo-webnn/resolve/main/vae_decoder/model.onnx",
+	],
+	vae_encoder: [
+		"/models/sd-turbo/vae_encoder/model.onnx",
+		"https://huggingface.co/eyaler/sd-turbo-webnn/resolve/main/vae_encoder/model.onnx",
+	],
+};
 
 let loadedImage = null;
 let sdSessions = null;
@@ -76,6 +97,24 @@ function supportsWebGPU() {
 	return typeof navigator !== "undefined" && !!navigator.gpu;
 }
 
+async function createSessionWithFallback(urls, sessionOptions, label) {
+	let lastError = null;
+
+	for (const url of urls) {
+		try {
+			console.log(`[PATCH 2B] trying ${label}:`, url);
+			const session = await ort.InferenceSession.create(url, sessionOptions);
+			console.log(`[PATCH 2B] loaded ${label}:`, url);
+			return session;
+		} catch (err) {
+			console.warn(`[PATCH 2B] failed ${label}:`, url, err);
+			lastError = err;
+		}
+	}
+
+	throw lastError ?? new Error(`No valid source found for ${label}`);
+}
+
 // -------------------------
 // runtime bootstrap
 // -------------------------
@@ -96,57 +135,24 @@ async function initSdTurboSessions() {
 		executionProviders: ["webgpu"],
 		graphOptimizationLevel: "all",
 	};
-	/*
-  const [textEncoder, unet, vaeDecoder, vaeEncoder] = await Promise.all([
-    ort.InferenceSession.create(`${SD_MODEL_BASE}/text_encoder/model.onnx`, sessionOptions),
-    ort.InferenceSession.create(`${SD_MODEL_BASE}/unet/model.onnx`, sessionOptions),
-    ort.InferenceSession.create(`${SD_MODEL_BASE}/vae_decoder/model.onnx`, sessionOptions),
-    ort.InferenceSession.create(`${SD_MODEL_BASE}/vae_encoder/model.onnx`, sessionOptions),
-  ]);
-*/
-	const SD_MODEL_SOURCES = {
-		text_encoder: [
-			"/models/sd-turbo/text_encoder/model.onnx",
-			"https://huggingface.co/microsoft/sd-turbo-webnn/resolve/main/text_encoder/model.onnx",
-			"https://huggingface.co/webnn/sd-turbo-webnn/resolve/main/text_encoder/model.onnx",
-		],
-		unet: [
-			"/models/sd-turbo/unet/model.onnx",
-			"https://huggingface.co/microsoft/sd-turbo-webnn/resolve/main/unet/model.onnx",
-			"https://huggingface.co/webnn/sd-turbo-webnn/resolve/main/unet/model.onnx",
-		],
-		vae_decoder: [
-			"/models/sd-turbo/vae_decoder/model.onnx",
-			"https://huggingface.co/microsoft/sd-turbo-webnn/resolve/main/vae_decoder/model.onnx",
-			"https://huggingface.co/webnn/sd-turbo-webnn/resolve/main/vae_decoder/model.onnx",
-		],
-		vae_encoder: [
-			"/models/sd-turbo/vae_encoder/model.onnx",
-			"https://huggingface.co/eyaler/sd-turbo-webnn/resolve/main/vae_encoder/model.onnx",
-		],
-	};
-
-	async function createSessionWithFallback(urls, sessionOptions) {
-		let lastError = null;
-
-		for (const url of urls) {
-			try {
-				console.log("[PATCH 2B] trying model:", url);
-				return await ort.InferenceSession.create(url, sessionOptions);
-			} catch (err) {
-				console.warn("[PATCH 2B] failed model:", url, err);
-				lastError = err;
-			}
-		}
-
-		throw lastError ?? new Error("No valid model source found");
-	}
 
 	const [textEncoder, unet, vaeDecoder, vaeEncoder] = await Promise.all([
-		createSessionWithFallback(SD_MODEL_SOURCES.text_encoder, sessionOptions),
-		createSessionWithFallback(SD_MODEL_SOURCES.unet, sessionOptions),
-		createSessionWithFallback(SD_MODEL_SOURCES.vae_decoder, sessionOptions),
-		createSessionWithFallback(SD_MODEL_SOURCES.vae_encoder, sessionOptions),
+		createSessionWithFallback(
+			SD_MODEL_SOURCES.text_encoder,
+			sessionOptions,
+			"text_encoder",
+		),
+		createSessionWithFallback(SD_MODEL_SOURCES.unet, sessionOptions, "unet"),
+		createSessionWithFallback(
+			SD_MODEL_SOURCES.vae_decoder,
+			sessionOptions,
+			"vae_decoder",
+		),
+		createSessionWithFallback(
+			SD_MODEL_SOURCES.vae_encoder,
+			sessionOptions,
+			"vae_encoder",
+		),
 	]);
 
 	sdSessions = { textEncoder, unet, vaeDecoder, vaeEncoder };

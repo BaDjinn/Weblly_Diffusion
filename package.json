@@ -1,25 +1,14 @@
 {
 	"name": "Weblly",
 	"version": "0.0.0",
-	"description": "based on onnxruntime sd-turbo example",
+	"private": true,
 	"main": "index.js",
-	"type": "module",
 	"scripts": {
 		"dev": "webpack serve --no-client-overlay",
-		"build1": "node scripts/build.js",
 		"fetch-sd-turbo": "node scripts/fetch-sd-turbo.mjs",
 		"build": "npm run fetch-sd-turbo",
 		"build:full": "npm run fetch-sd-turbo && webpack"
 	},
-	"keywords": [
-		"onnxruntime",
-		"webgpu",
-		"stable diffusion",
-		"deep learning",
-		"AI"
-	],
-	"author": "me",
-	"license": "Apache-2.0",
 	"dependencies": {
 		"copy-webpack-plugin": "^12.0.2",
 		"esbuild": "^0.20.1",
