@@ -20,6 +20,10 @@ const strengthValue = document.getElementById("strengthValue");
 const promptInput = document.getElementById("promptInput");
 const inputCanvas = document.getElementById("inputCanvas");
 const outputCanvas = document.getElementById("outputCanvas");
+const modelProgressWrap = document.getElementById("modelProgressWrap");
+const modelProgressBar = document.getElementById("modelProgressBar");
+const modelProgressText = document.getElementById("modelProgressText");
+const modelProgressDetail = document.getElementById("modelProgressDetail");
 const inputCtx = inputCanvas.getContext("2d", { willReadFrequently: true });
 const outputCtx = outputCanvas.getContext("2d", { willReadFrequently: true });
 
@@ -97,6 +101,66 @@ function supportsWebGPU() {
 	return typeof navigator !== "undefined" && !!navigator.gpu;
 }
 
+function formatBytes(bytes) {
+	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+	const units = ["B", "KB", "MB", "GB"];
+	let i = 0;
+	let value = bytes;
+	while (value >= 1024 && i < units.length - 1) {
+		value /= 1024;
+		i++;
+	}
+	return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${units[i]}`;
+}
+
+function resetModelProgressUI() {
+	modelProgressWrap.style.display = "none";
+	modelProgressBar.style.width = "0%";
+	modelProgressText.textContent = "0%";
+	modelProgressDetail.textContent = "In attesa...";
+}
+
+function updateModelProgressUI(progressState) {
+	const entries = Object.entries(progressState.components);
+
+	const totalLoaded = entries.reduce((sum, [, c]) => sum + (c.loaded || 0), 0);
+	const totalKnown = entries.reduce((sum, [, c]) => sum + (c.total || 0), 0);
+
+	let percent = 0;
+	if (totalKnown > 0) {
+		percent = Math.max(
+			0,
+			Math.min(100, Math.round((totalLoaded / totalKnown) * 100)),
+		);
+	}
+
+	modelProgressWrap.style.display = "block";
+	modelProgressBar.style.width = `${percent}%`;
+	modelProgressText.textContent = `${percent}%`;
+
+	const lines = entries.map(([name, c]) => {
+		const loadedTxt = formatBytes(c.loaded || 0);
+		const totalTxt = c.total ? formatBytes(c.total) : "sconosciuto";
+		const icon =
+			c.status === "done"
+				? "✅"
+				: c.status === "error"
+					? "❌"
+					: c.status === "loading"
+						? "⬇️"
+						: "⏳";
+
+		const itemPercent =
+			c.total && c.total > 0
+				? ` (${Math.round((c.loaded / c.total) * 100)}%)`
+				: "";
+
+		return `${icon} ${name}: ${loadedTxt} / ${totalTxt}${itemPercent}`;
+	});
+
+	modelProgressDetail.textContent = lines.join("\n");
+}
+
 async function createSessionWithFallback(urls, sessionOptions, label) {
 	let lastError = null;
 
@@ -124,6 +188,102 @@ async function initFaceDetection() {
 	);
 }
 
+async function fetchWithProgress(url, componentName, progressState) {
+	const res = await fetch(url, { cache: "force-cache" });
+
+	if (!res.ok) {
+		throw new Error(`HTTP ${res.status} ${res.statusText}`);
+	}
+
+	const total = Number(res.headers.get("content-length") || 0);
+
+	progressState.components[componentName] = {
+		loaded: 0,
+		total,
+		status: "loading",
+	};
+	updateModelProgressUI(progressState);
+
+	if (!res.body) {
+		const blob = await res.blob();
+		progressState.components[componentName].loaded = blob.size;
+		progressState.components[componentName].total = blob.size;
+		progressState.components[componentName].status = "done";
+		updateModelProgressUI(progressState);
+		return blob;
+	}
+
+	const reader = res.body.getReader();
+	const chunks = [];
+	let loaded = 0;
+
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+
+		chunks.push(value);
+		loaded += value.byteLength;
+
+		progressState.components[componentName].loaded = loaded;
+		updateModelProgressUI(progressState);
+	}
+
+	const blob = new Blob(chunks, { type: "application/octet-stream" });
+
+	progressState.components[componentName].loaded = blob.size;
+	progressState.components[componentName].total = total || blob.size;
+	progressState.components[componentName].status = "done";
+	updateModelProgressUI(progressState);
+
+	return blob;
+}
+
+async function createSessionWithProgress(
+	urls,
+	sessionOptions,
+	componentName,
+	progressState,
+) {
+	let lastError = null;
+
+	for (const url of urls) {
+		try {
+			console.log(`[PATCH 2B] trying ${componentName}:`, url);
+
+			progressState.components[componentName] = {
+				loaded: 0,
+				total: 0,
+				status: "loading",
+			};
+			updateModelProgressUI(progressState);
+
+			const blob = await fetchWithProgress(url, componentName, progressState);
+			const objectUrl = URL.createObjectURL(blob);
+
+			try {
+				const session = await ort.InferenceSession.create(
+					objectUrl,
+					sessionOptions,
+				);
+				console.log(`[PATCH 2B] loaded ${componentName}:`, url);
+				return session;
+			} finally {
+				URL.revokeObjectURL(objectUrl);
+			}
+		} catch (err) {
+			console.warn(`[PATCH 2B] failed ${componentName}:`, url, err);
+			progressState.components[componentName] = {
+				...(progressState.components[componentName] || {}),
+				status: "error",
+			};
+			updateModelProgressUI(progressState);
+			lastError = err;
+		}
+	}
+
+	throw lastError ?? new Error(`No valid source found for ${componentName}`);
+}
+
 async function initSdTurboSessions() {
 	if (!supportsWebGPU()) {
 		throw new Error("WebGPU non disponibile nel browser.");
@@ -136,24 +296,46 @@ async function initSdTurboSessions() {
 		graphOptimizationLevel: "all",
 	};
 
-	const [textEncoder, unet, vaeDecoder, vaeEncoder] = await Promise.all([
-		createSessionWithFallback(
-			SD_MODEL_SOURCES.text_encoder,
-			sessionOptions,
-			"text_encoder",
-		),
-		createSessionWithFallback(SD_MODEL_SOURCES.unet, sessionOptions, "unet"),
-		createSessionWithFallback(
-			SD_MODEL_SOURCES.vae_decoder,
-			sessionOptions,
-			"vae_decoder",
-		),
-		createSessionWithFallback(
-			SD_MODEL_SOURCES.vae_encoder,
-			sessionOptions,
-			"vae_encoder",
-		),
-	]);
+	const progressState = {
+		components: {
+			text_encoder: { loaded: 0, total: 0, status: "pending" },
+			unet: { loaded: 0, total: 0, status: "pending" },
+			vae_decoder: { loaded: 0, total: 0, status: "pending" },
+			vae_encoder: { loaded: 0, total: 0, status: "pending" },
+		},
+	};
+
+	resetModelProgressUI();
+	updateModelProgressUI(progressState);
+
+	// sequenziale = barra leggibile e stato chiaro
+	const textEncoder = await createSessionWithProgress(
+		SD_MODEL_SOURCES.text_encoder,
+		sessionOptions,
+		"text_encoder",
+		progressState,
+	);
+
+	const unet = await createSessionWithProgress(
+		SD_MODEL_SOURCES.unet,
+		sessionOptions,
+		"unet",
+		progressState,
+	);
+
+	const vaeDecoder = await createSessionWithProgress(
+		SD_MODEL_SOURCES.vae_decoder,
+		sessionOptions,
+		"vae_decoder",
+		progressState,
+	);
+
+	const vaeEncoder = await createSessionWithProgress(
+		SD_MODEL_SOURCES.vae_encoder,
+		sessionOptions,
+		"vae_encoder",
+		progressState,
+	);
 
 	sdSessions = { textEncoder, unet, vaeDecoder, vaeEncoder };
 
@@ -169,6 +351,10 @@ async function initSdTurboSessions() {
 	});
 
 	sdTurboReady = true;
+	modelProgressBar.style.width = "100%";
+	modelProgressText.textContent = "100%";
+	setStatus("Runtime pronto. Face detection + SD-Turbo bootstrap OK.");
+
 	return sdSessions;
 }
 
@@ -188,6 +374,8 @@ async function bootstrap() {
 					sdErr,
 				);
 				sdTurboReady = false;
+				modelProgressDetail.textContent +=
+					"\n⚠️ Bootstrap SD‑Turbo fallito, uso fallback placeholder.";
 				setStatus(
 					"Face detection pronta. SD-Turbo non disponibile: uso fallback placeholder.",
 				);
