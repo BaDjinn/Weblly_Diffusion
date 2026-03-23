@@ -1,322 +1,458 @@
-import ort from 'onnxruntime-web/webgpu';
-
-function log(i) { console.log(i); document.getElementById('status').innerText += `\n${i}`; }
-
-/*
- * get configuration from url
-*/
-function getConfig() {
-    const query = window.location.search.substring(1);
-    var config = {
-        // model: "models/onnx-sd-turbo-fp16",
-        model: "https://huggingface.co/schmuell/sd-turbo-ort-web/resolve/main",
-        provider: "webgpu",
-        device: "gpu",
-        threads: "1",
-        images: "2",
-    };
-    let vars = query.split("&");
-    for (var i = 0; i < vars.length; i++) {
-        let pair = vars[i].split("=");
-        if (pair[0] in config) {
-            config[pair[0]] = decodeURIComponent(pair[1]);
-        } else if (pair[0].length > 0) {
-            throw new Error("unknown argument: " + pair[0]);
-        }
-    }
-    config.threads = parseInt(config.threads);
-    config.images = parseInt(config.images);
-    return config;
-}
-
-/*
- * initialize latents with random noise
+/* PATCH 1 - Face anonymizer scaffold
+ *
+ * Questa patch:
+ * - carica un'immagine
+ * - rileva un volto
+ * - ritaglia il volto con padding
+ * - applica una "anonymization" placeholder (blur + warp + noise + tone shift)
+ * - re-blenda il volto nell'immagine originale
+ *
+ * PATCH 2:
+ * - sostituire runImg2ImgOnCrop() con la pipeline reale SD-Turbo img2img
  */
-function randn_latents(shape, noise_sigma) {
-    function randn() {
-        // Use the Box-Muller transform
-        let u = Math.random();
-        let v = Math.random();
-        let z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-        return z;
-    }
-    let size = 1;
-    shape.forEach(element => {
-        size *= element;
-    });
 
-    let data = new Float32Array(size);
-    // Loop over the shape dimensions
-    for (let i = 0; i < size; i++) {
-        data[i] = randn() * noise_sigma;
-    }
-    return data;
+const imageInput = document.getElementById("imageInput");
+const runBtn = document.getElementById("runBtn");
+const resetBtn = document.getElementById("resetBtn");
+
+const statusEl = document.getElementById("status");
+const inputMeta = document.getElementById("inputMeta");
+const outputMeta = document.getElementById("outputMeta");
+
+const strengthSlider = document.getElementById("strengthSlider");
+const strengthValue = document.getElementById("strengthValue");
+const promptInput = document.getElementById("promptInput");
+
+const inputCanvas = document.getElementById("inputCanvas");
+const outputCanvas = document.getElementById("outputCanvas");
+
+const inputCtx = inputCanvas.getContext("2d", { willReadFrequently: true });
+const outputCtx = outputCanvas.getContext("2d", { willReadFrequently: true });
+
+const FACE_MODEL_URL = "./models/face-api";
+const FACE_INPUT_SIZE = 512;
+const FACE_PADDING_RATIO = 0.28;
+
+let loadedImage = null;
+let originalImageBitmap = null;
+let lastFaceBox = null;
+
+// -------------------------
+// UI helpers
+// -------------------------
+function setStatus(msg) {
+	statusEl.textContent = msg;
 }
 
-/*
- * fetch and cache model
- */
-async function fetchAndCache(base_url, model_path) {
-    const url = `${base_url}/${model_path}`;
-    try {
-        const cache = await caches.open("onnx");
-        let cachedResponse = await cache.match(url);
-        if (cachedResponse == undefined) {
-            await cache.add(url);
-            cachedResponse = await cache.match(url);
-            log(`${model_path} (network)`);
-        } else {
-            log(`${model_path} (cached)`);
-        }
-        const data = await cachedResponse.arrayBuffer();
-        return data;
-    } catch (error) {
-        log(`${model_path} (network)`);
-        return await fetch(url).then(response => response.arrayBuffer());
-    }
+function setCanvasSizeToImage(canvas, ctx, img) {
+	const width = img.naturalWidth || img.width;
+	const height = img.naturalHeight || img.height;
+	canvas.width = width;
+	canvas.height = height;
+	ctx.clearRect(0, 0, width, height);
+	ctx.drawImage(img, 0, 0, width, height);
 }
 
-/*
- * load models used in the pipeline
- */
-async function load_models(models) {
-    const cache = await caches.open("onnx");
-    let missing = 0;
-    for (const [name, model] of Object.entries(models)) {
-        const url = `${config.model}/${model.url}`;
-        let cachedResponse = await cache.match(url);
-        if (cachedResponse === undefined) {
-            missing += model.size;
-        }
-    }
-    if (missing > 0) {
-        log(`downloading ${missing} MB from network ... it might take a while`);
-    } else {
-        log("loading...");
-    }
-    for (const [name, model] of Object.entries(models)) {
-        try {
-            const start = performance.now();
-            const model_bytes = await fetchAndCache(config.model, model.url);
-            const sess_opt = { ...opt, ...model.opt };
-            models[name].sess = await ort.InferenceSession.create(model_bytes, sess_opt);
-            const stop = performance.now();
-            log(`${model.url} in ${(stop - start).toFixed(1)}ms`);
-        } catch (e) {
-            log(`${model.url} failed, ${e}`);
-        }
-    }
-    log("ready.");
+function copyCanvas(src, dst, dstCtx) {
+	dst.width = src.width;
+	dst.height = src.height;
+	dstCtx.clearRect(0, 0, dst.width, dst.height);
+	dstCtx.drawImage(src, 0, 0);
 }
 
-const config = getConfig();
-
-const models = {
-    "unet": {
-        url: "unet/model.onnx", size: 640,
-        // should have 'steps: 1' but will fail to create the session
-        opt: { freeDimensionOverrides: { batch_size: 1, num_channels: 4, height: 64, width: 64, sequence_length: 77, } }
-    },
-    "text_encoder": {
-        url: "text_encoder/model.onnx", size: 1700,
-        // should have 'sequence_length: 77' but produces a bad image
-        opt: { freeDimensionOverrides: { batch_size: 1, } },
-    },
-    "vae_decoder": {
-        url: "vae_decoder/model.onnx", size: 95,
-        opt: { freeDimensionOverrides: { batch_size: 1, num_channels_latent: 4, height_latent: 64, width_latent: 64 } }
-    }
+function clamp(value, min, max) {
+	return Math.max(min, Math.min(max, value));
 }
 
-ort.env.wasm.wasmPaths = 'dist/';
-ort.env.wasm.numThreads = 1;
-ort.env.wasm.simd = true;
-
-let tokenizer;
-let loading;
-const sigma = 14.6146;
-const gamma = 0;
-const vae_scaling_factor = 0.18215;
-const text = document.getElementById("user-input");
-
-text.value = "Paris with the river in the background";
-
-const opt = {
-    executionProviders: [config.provider],
-    enableMemPattern: false,
-    enableCpuMemArena: false,
-    extra: {
-        session: {
-            disable_prepacking: "1",
-            use_device_allocator_for_initializers: "1",
-            use_ort_model_bytes_directly: "1",
-            use_ort_model_bytes_for_initializers: "1"
-        }
-    },
-};
-
-switch (config.provider) {
-    case "webgpu":
-        if (!("gpu" in navigator)) {
-            throw new Error("webgpu is NOT supported");
-        }
-        opt.preferredOutputLocation = { last_hidden_state: "gpu-buffer" };
-        break;
-    case "webnn":
-        if (!("ml" in navigator)) {
-            throw new Error("webnn is NOT supported");
-        }
-        opt.executionProviders = [{
-            name: "webnn",
-            deviceType: config.device,
-            powerPreference: 'default'
-        }];
-        break;
+function randomInt(max) {
+	return Math.floor(Math.random() * max);
 }
 
-// Event listener for Ctrl + Enter or CMD + Enter
-document.getElementById('user-input').addEventListener('keydown', function (e) {
-    if (e.ctrlKey && e.key === 'Enter') {
-        generate_image();
-    }
-});
-document.getElementById('send-button').addEventListener('click', function (e) {
-    generate_image()
+// -------------------------
+// Initialization
+// -------------------------
+async function init() {
+	try {
+		setStatus("Caricamento modelli face detection...");
+		// SSD MobileNet V1
+		await faceapi.nets.ssdMobilenetv1.loadFromUri(
+			`${FACE_MODEL_URL}/ssd_mobilenetv1`,
+		);
+		setStatus("Modelli caricati. Ora puoi caricare un'immagine.");
+	} catch (err) {
+		console.error(err);
+		setStatus(
+			"Errore nel caricamento dei modelli face-api. Controlla la cartella ./models/face-api/ssd_mobilenetv1.",
+		);
+	}
+}
+
+strengthSlider.addEventListener("input", () => {
+	strengthValue.textContent = Number(strengthSlider.value).toFixed(2);
 });
 
-/*
- * scale the latents
-*/
-function scale_model_inputs(t) {
-    const d_i = t.data;
-    const d_o = new Float32Array(d_i.length);
-
-    const divi = (sigma ** 2 + 1) ** 0.5;
-    for (let i = 0; i < d_i.length; i++) {
-        d_o[i] = d_i[i] / divi;
-    }
-    return new ort.Tensor(d_o, t.dims);
+// -------------------------
+// Image loading
+// -------------------------
+function loadImageFromFile(file) {
+	return new Promise((resolve, reject) => {
+		const img = new Image();
+		img.onload = () => resolve(img);
+		img.onerror = reject;
+		img.src = URL.createObjectURL(file);
+	});
 }
 
-/*
- * Poor mens EulerA step
- * Since this example is just sd-turbo, implement the absolute minimum needed to create an image
- * Maybe next step is to support all sd flavors and create a small helper model in onnx can deal
- * much more efficient with latents.
- */
-function step(model_output, sample) {
-    const d_o = new Float32Array(model_output.data.length);
-    const prev_sample = new ort.Tensor(d_o, model_output.dims);
-    const sigma_hat = sigma * (gamma + 1);
+imageInput.addEventListener("change", async (e) => {
+	const file = e.target.files?.[0];
+	if (!file) return;
 
-    for (let i = 0; i < model_output.data.length; i++) {
-        const pred_original_sample = sample.data[i] - sigma_hat * model_output.data[i];
-        const derivative = (sample.data[i] - pred_original_sample) / sigma_hat;
-        const dt = 0 - sigma_hat;
-        d_o[i] = (sample.data[i] + derivative * dt) / vae_scaling_factor;
-    }
-    return prev_sample;
+	try {
+		setStatus("Caricamento immagine...");
+		loadedImage = await loadImageFromFile(file);
+		originalImageBitmap = loadedImage;
+
+		setCanvasSizeToImage(inputCanvas, inputCtx, loadedImage);
+		copyCanvas(inputCanvas, outputCanvas, outputCtx);
+
+		inputMeta.textContent = `Dimensioni: ${inputCanvas.width} × ${inputCanvas.height}`;
+		outputMeta.textContent = "Output pronto per la generazione.";
+		runBtn.disabled = false;
+		resetBtn.disabled = false;
+
+		setStatus("Immagine caricata. Premi 'Anonymize'.");
+	} catch (err) {
+		console.error(err);
+		setStatus("Errore nel caricamento dell'immagine.");
+	}
+});
+
+resetBtn.addEventListener("click", () => {
+	if (!loadedImage) return;
+	setCanvasSizeToImage(inputCanvas, inputCtx, loadedImage);
+	copyCanvas(inputCanvas, outputCanvas, outputCtx);
+	outputMeta.textContent = "Output resettato.";
+	setStatus("Reset completato.");
+});
+
+// -------------------------
+// Face detection and crop
+// -------------------------
+async function detectSingleFaceFromCanvas(canvas) {
+	const detection = await faceapi.detectSingleFace(canvas);
+	if (!detection) return null;
+
+	const { x, y, width, height } = detection.box;
+
+	const padX = width * FACE_PADDING_RATIO;
+	const padY = height * FACE_PADDING_RATIO;
+
+	return {
+		x: Math.floor(clamp(x - padX, 0, canvas.width)),
+		y: Math.floor(clamp(y - padY, 0, canvas.height)),
+		w: Math.floor(clamp(width + 2 * padX, 1, canvas.width)),
+		h: Math.floor(clamp(height + 2 * padY, 1, canvas.height)),
+	};
 }
 
+function cropFaceToSquare(sourceCanvas, faceBox, targetSize = FACE_INPUT_SIZE) {
+	const cropCanvas = document.createElement("canvas");
+	cropCanvas.width = targetSize;
+	cropCanvas.height = targetSize;
+
+	const ctx = cropCanvas.getContext("2d", { willReadFrequently: true });
+
+	ctx.drawImage(
+		sourceCanvas,
+		faceBox.x,
+		faceBox.y,
+		faceBox.w,
+		faceBox.h,
+		0,
+		0,
+		targetSize,
+		targetSize,
+	);
+
+	return cropCanvas;
+}
+
+// -------------------------
+// Placeholder anonymization
+// -------------------------
 /**
- * draw an image from tensor
- * @param {ort.Tensor} t
- * @param {number} image_nr
-*/
-function draw_image(t, image_nr) {
-    let pix = t.data;
-    for (var i = 0; i < pix.length; i++) {
-        let x = pix[i];
-        x = x / 2 + 0.5
-        if (x < 0.) x = 0.;
-        if (x > 1.) x = 1.;
-        pix[i] = x;
-    }
-    const imageData = t.toImageData({ tensorLayout: 'NCWH', format: 'RGB' });
-    const canvas = document.getElementById(`img_canvas_${image_nr}`);
-    canvas.width = imageData.width;
-    canvas.height = imageData.height;
-    canvas.getContext('2d').putImageData(imageData, 0, 0);
-    const div = document.getElementById(`img_div_${image_nr}`);
-    div.style.opacity = 1.
+ * PATCH 2:
+ * sostituisci il contenuto di questa funzione con la vera pipeline SD-Turbo img2img.
+ *
+ * Firma consigliata per il futuro:
+ *   runImg2ImgOnCrop(cropCanvas, {
+ *      prompt,
+ *      strength,
+ *      seed
+ *   }) => Promise<HTMLCanvasElement>
+ */
+async function runImg2ImgOnCrop(cropCanvas, { prompt, strength, seed }) {
+	// Per ora facciamo una trasformazione "placeholder" ma convincente:
+	// - blur selettivo
+	// - lieve deformazione affine a blocchi
+	// - shift cromatico
+	// - noise leggero
+	// - overlay speculare parziale
+	//
+	// L'idea è simulare un volto "diverso" pur mantenendo posizione/illuminazione generale.
+	// Nella PATCH 2 qui dentro andrà il vero ramo ONNX img2img.
+
+	console.log(
+		"[PATCH 1] Prompt:",
+		prompt,
+		"Strength:",
+		strength,
+		"Seed:",
+		seed,
+	);
+
+	const out = document.createElement("canvas");
+	out.width = cropCanvas.width;
+	out.height = cropCanvas.height;
+
+	const ctx = out.getContext("2d", { willReadFrequently: true });
+
+	// base
+	ctx.save();
+	ctx.filter = `blur(${Math.max(2, Math.floor(strength * 8))}px) saturate(${0.85 + (1 - strength) * 0.2}) contrast(1.02)`;
+	ctx.drawImage(cropCanvas, 0, 0);
+	ctx.restore();
+
+	// copy data for pixel ops
+	let imageData = ctx.getImageData(0, 0, out.width, out.height);
+	let data = imageData.data;
+
+	// simple pseudo random from seed
+	let s = seed % 2147483647;
+	if (s <= 0) s += 2147483646;
+	const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+
+	// subtle tone/noise shift
+	for (let i = 0; i < data.length; i += 4) {
+		const n = (rnd() - 0.5) * 18 * strength;
+		data[i] = clamp(data[i] + n + 4, 0, 255); // R
+		data[i + 1] = clamp(data[i + 1] + n * 0.4, 0, 255); // G
+		data[i + 2] = clamp(data[i + 2] - n * 0.8, 0, 255); // B
+	}
+	ctx.putImageData(imageData, 0, 0);
+
+	// mirror overlay in central region for identity disruption
+	const mirrorCanvas = document.createElement("canvas");
+	mirrorCanvas.width = out.width;
+	mirrorCanvas.height = out.height;
+	const mctx = mirrorCanvas.getContext("2d");
+	mctx.save();
+	mctx.translate(out.width, 0);
+	mctx.scale(-1, 1);
+	mctx.drawImage(out, 0, 0);
+	mctx.restore();
+
+	ctx.save();
+	ctx.globalAlpha = 0.12 + strength * 0.08;
+	ctx.drawImage(
+		mirrorCanvas,
+		Math.floor(out.width * 0.08),
+		0,
+		Math.floor(out.width * 0.84),
+		out.height,
+		Math.floor(out.width * 0.08),
+		0,
+		Math.floor(out.width * 0.84),
+		out.height,
+	);
+	ctx.restore();
+
+	// warp strips
+	const warped = document.createElement("canvas");
+	warped.width = out.width;
+	warped.height = out.height;
+	const wctx = warped.getContext("2d");
+
+	const strips = 18;
+	const stripH = Math.ceil(out.height / strips);
+	for (let i = 0; i < strips; i++) {
+		const sy = i * stripH;
+		const sh = Math.min(stripH, out.height - sy);
+		const dx = Math.floor((rnd() - 0.5) * 18 * strength);
+		const dw = out.width + Math.floor((rnd() - 0.5) * 10 * strength);
+		wctx.drawImage(out, 0, sy, out.width, sh, dx, sy, dw, sh);
+	}
+
+	// soft vignette to hide seams / make blend easier
+	wctx.save();
+	const grad = wctx.createRadialGradient(
+		warped.width / 2,
+		warped.height / 2,
+		warped.width * 0.2,
+		warped.width / 2,
+		warped.height / 2,
+		warped.width * 0.62,
+	);
+	grad.addColorStop(0, "rgba(255,255,255,0)");
+	grad.addColorStop(1, "rgba(0,0,0,0.07)");
+	wctx.fillStyle = grad;
+	wctx.fillRect(0, 0, warped.width, warped.height);
+	wctx.restore();
+
+	return warped;
 }
 
-async function generate_image() {
-    try {
-        document.getElementById('status').innerText = "generating ...";
+// -------------------------
+// Blending back
+// -------------------------
+function createFeatherMask(w, h) {
+	const mask = document.createElement("canvas");
+	mask.width = w;
+	mask.height = h;
 
-        if (tokenizer === undefined) {
-            tokenizer = await AutoTokenizer.from_pretrained('Xenova/clip-vit-base-patch16');
-            tokenizer.pad_token_id = 0;
-        }
-        let canvases = [];
-        await loading;
+	const ctx = mask.getContext("2d");
 
-        for (let j = 0; j < config.images; j++) {
-            const div = document.getElementById(`img_div_${j}`);
-            div.style.opacity = 0.5
-        }
+	const grad = ctx.createRadialGradient(
+		w / 2,
+		h / 2,
+		Math.min(w, h) * 0.18,
+		w / 2,
+		h / 2,
+		Math.min(w, h) * 0.52,
+	);
+	grad.addColorStop(0.0, "rgba(255,255,255,1)");
+	grad.addColorStop(0.7, "rgba(255,255,255,0.90)");
+	grad.addColorStop(1.0, "rgba(255,255,255,0)");
 
-        const { input_ids } = await tokenizer(text.value, { padding: true, max_length: 77, truncation: true, return_tensor: false });
+	ctx.fillStyle = grad;
+	ctx.fillRect(0, 0, w, h);
 
-        // text-encoder
-        let start = performance.now();
-        const { last_hidden_state } = await models.text_encoder.sess.run(
-            { "input_ids": new ort.Tensor("int32", input_ids, [1, input_ids.length]) });
-
-        let perf_info = [`text_encoder: ${(performance.now() - start).toFixed(1)}ms`];
-
-        for (let j = 0; j < config.images; j++) {
-            const latent_shape = [1, 4, 64, 64];
-            let latent = new ort.Tensor(randn_latents(latent_shape, sigma), latent_shape);
-            const latent_model_input = scale_model_inputs(latent);
-
-            // unet
-            start = performance.now();
-            let feed = {
-                "sample": latent_model_input,
-                "timestep": new ort.Tensor("int64", [999n], [1]),
-                "encoder_hidden_states": last_hidden_state,
-            };
-            let { out_sample } = await models.unet.sess.run(feed);
-            perf_info.push(`unet: ${(performance.now() - start).toFixed(1)}ms`);
-
-            // scheduler
-            const new_latents = step(out_sample, latent)
-
-            // vae_decoder
-            start = performance.now();
-            const { sample } = await models.vae_decoder.sess.run({ "latent_sample": new_latents });
-            perf_info.push(`vae_decoder: ${(performance.now() - start).toFixed(1)}ms`);
-
-            draw_image(sample, j);
-            log(perf_info.join(", "))
-            perf_info = [];
-        }
-        // this is a gpu-buffer we own, so we need to dispose it
-        last_hidden_state.dispose();
-        log("done");
-    } catch (e) {
-        log(e);
-    }
+	return mask;
 }
 
+function blendFaceBack(originalCanvas, generatedFaceCanvas, faceBox) {
+	const resultCanvas = document.createElement("canvas");
+	resultCanvas.width = originalCanvas.width;
+	resultCanvas.height = originalCanvas.height;
+	const ctx = resultCanvas.getContext("2d", { willReadFrequently: true });
 
-async function hasFp16() {
-    try {
-        const adapter = await navigator.gpu.requestAdapter()
-        return adapter.features.has('shader-f16')
-    } catch (e) {
-        return false
-    }
+	// original
+	ctx.drawImage(originalCanvas, 0, 0);
+
+	// resize generated face to bbox
+	const resizedFace = document.createElement("canvas");
+	resizedFace.width = faceBox.w;
+	resizedFace.height = faceBox.h;
+	const rctx = resizedFace.getContext("2d", { willReadFrequently: true });
+	rctx.drawImage(generatedFaceCanvas, 0, 0, faceBox.w, faceBox.h);
+
+	// feather mask
+	const mask = createFeatherMask(faceBox.w, faceBox.h);
+
+	const maskedFace = document.createElement("canvas");
+	maskedFace.width = faceBox.w;
+	maskedFace.height = faceBox.h;
+	const mctx = maskedFace.getContext("2d", { willReadFrequently: true });
+
+	mctx.drawImage(resizedFace, 0, 0);
+	mctx.globalCompositeOperation = "destination-in";
+	mctx.drawImage(mask, 0, 0);
+
+	// draw final
+	ctx.drawImage(maskedFace, faceBox.x, faceBox.y);
+
+	return resultCanvas;
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-    hasFp16().then((fp16) => {
-        if (fp16) {
-            loading = load_models(models);
-        } else {
-            log("Your GPU or Browser doesn't support webgpu/f16");
-        }
-    });
+function drawFaceBoxOverlay(canvas, faceBox) {
+	const overlay = document.createElement("canvas");
+	overlay.width = canvas.width;
+	overlay.height = canvas.height;
+	const ctx = overlay.getContext("2d");
+	ctx.drawImage(canvas, 0, 0);
+
+	ctx.strokeStyle = "rgba(96,165,250,0.9)";
+	ctx.lineWidth = Math.max(2, Math.floor(canvas.width / 300));
+	ctx.strokeRect(faceBox.x, faceBox.y, faceBox.w, faceBox.h);
+
+	return overlay;
+}
+
+// -------------------------
+// Main pipeline
+// -------------------------
+runBtn.addEventListener("click", async () => {
+	if (!loadedImage) {
+		setStatus("Carica prima un'immagine.");
+		return;
+	}
+
+	try {
+		runBtn.disabled = true;
+		setStatus("Cerco il volto...");
+
+		const faceBox = await detectSingleFaceFromCanvas(inputCanvas);
+
+		if (!faceBox) {
+			setStatus(
+				"Nessun volto rilevato. Prova con una foto più frontale o con il volto più grande.",
+			);
+			runBtn.disabled = false;
+			return;
+		}
+
+		lastFaceBox = faceBox;
+
+		// disegna box di debug sull'input (solo visivo)
+		const overlayCanvas = drawFaceBoxOverlay(inputCanvas, faceBox);
+		copyCanvas(overlayCanvas, inputCanvas, inputCtx);
+
+		setStatus("Volto trovato. Eseguo crop...");
+		const cropCanvas = cropFaceToSquare(
+			outputCanvas.width
+				? outputCanvas
+				: originalImageBitmap instanceof HTMLImageElement
+					? inputCanvas
+					: inputCanvas,
+			faceBox,
+			FACE_INPUT_SIZE,
+		);
+
+		const prompt = promptInput.value || "a realistic face";
+		const strength = Number(strengthSlider.value);
+		const seed = randomInt(1_000_000_000);
+
+		setStatus(`Anonimizzazione in corso... (seed ${seed})`);
+
+		const generatedFace = await runImg2ImgOnCrop(cropCanvas, {
+			prompt,
+			strength,
+			seed,
+		});
+
+		setStatus("Reinserisco il volto nell'immagine originale...");
+		const resultCanvas = blendFaceBack(
+			outputCanvas.width ? outputCanvas : inputCanvas,
+			generatedFace,
+			faceBox,
+		);
+
+		outputCanvas.width = resultCanvas.width;
+		outputCanvas.height = resultCanvas.height;
+		outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+		outputCtx.drawImage(resultCanvas, 0, 0);
+
+		outputMeta.textContent = `Face box: x=${faceBox.x}, y=${faceBox.y}, w=${faceBox.w}, h=${faceBox.h} | prompt="${prompt}" | seed=${seed}`;
+		setStatus(
+			"Completato. PATCH 1 attiva: pipeline pronta per sostituire il placeholder con SD‑Turbo img2img.",
+		);
+	} catch (err) {
+		console.error(err);
+		setStatus("Errore durante l'anonimizzazione. Controlla la console.");
+	} finally {
+		runBtn.disabled = false;
+	}
 });
+
+// bootstrap
+init();

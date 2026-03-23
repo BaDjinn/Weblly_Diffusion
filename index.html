@@ -1,58 +1,238 @@
-<html>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet"
-  integrity="sha384-4bw+/aepP/YC94hEpVNVgiZdgIC5+VKNBQNGCHeKRQN+PtmoHDEXuppvnDJzQIu9" crossorigin="anonymous" />
-
-<script type="module">
-  import { AutoTokenizer } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.js';
-  window.AutoTokenizer = AutoTokenizer;
-</script>
-<script type="module" src="dist/index.js"></script>
+<!DOCTYPE html>
+<html lang="it">
 
 <head>
-  <title>Weblly Diffusion</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Weblly Diffusion - Face Anonymizer</title>
+  <style>
+    :root {
+      --bg: #111827;
+      --panel: #1f2937;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --accent: #60a5fa;
+      --ok: #10b981;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --border: #374151;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+
+    .app {
+      max-width: 1300px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      margin-top: 0;
+      margin-bottom: 8px;
+      font-size: 2rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      padding: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      margin-bottom: 16px;
+    }
+
+    .controls label {
+      font-size: 0.95rem;
+      color: var(--muted);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    input[type="file"] {
+      color: var(--text);
+    }
+
+    input[type="range"] {
+      width: 180px;
+    }
+
+    button {
+      border: 1px solid var(--border);
+      background: var(--accent);
+      color: white;
+      padding: 10px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .status {
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .panel h3 {
+      margin-top: 0;
+      margin-bottom: 10px;
+      font-size: 1rem;
+      color: var(--text);
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      background: #0b1220;
+      border: 1px dashed #334155;
+      border-radius: 12px;
+    }
+
+    .meta {
+      margin-top: 12px;
+      font-size: 0.9rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .hint {
+      margin-top: 14px;
+      padding: 12px;
+      border-radius: 12px;
+      background: #111827;
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.5;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #0b1220;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-right: 8px;
+    }
+
+    @media (max-width: 980px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
 </head>
-<style>
-  .onerow {
-    display: flex;
-    ;
 
-  }
-</style>
-
-<body data-bs-theme=" dark">
-  <div class="container">
-    <div class="row pt-3">
-      <div class="col-md-9 col-12">
-        <h2>Weblly Diffusion</h2>
-      </div>
-    </div>
-    <div class="container p-2 card" id="input-area">
-      <div class="input-group">
-        <textarea class="form-control" id="user-input" placeholder="Enter your prompt here..."></textarea>
-        <button class="btn btn-outline-primary" id="generate-btn">Let's see!</button>
-      </div>
-    </div>
-    <div id="image_area">
-      <div class="onerow">
-        <div id="img_div_0" style="margin-right: 4px;">
-          <canvas id="img_canvas_0"></canvas>
-        </div>
-        <div id="img_div_1" style="margin-right: 4px;">
-          <canvas id="img_canvas_1"></canvas>
-        </div>
-        <div id="img_div_2" style="margin-right: 4px;">
-          <canvas id="img_canvas_2"></canvas>
-        </div>
-        <div id="img_div_3" style="margin-right: 4px;">
-          <canvas id="img_canvas_3"></canvas>
-        </div>
-      </div>
+<body>
+  <div class="app">
+    <h1>Face Anonymizer — PATCH 1</h1>
+    <div class="subtitle">
+      Upload di un’immagine, rilevamento volto, crop, trasformazione del volto e reinserimento nell’immagine originale.
+      In questa patch il volto viene anonimizzato con una trasformazione placeholder, pronta da sostituire con il vero
+      img2img SD‑Turbo nella patch successiva.
     </div>
 
-    <p class="text-lg-start">
-    <div id="status" style="font:1em mono;"></div>
-    </p>
+    <div class="controls">
+      <label>
+        Immagine
+        <input type="file" id="imageInput" accept="image/*" />
+      </label>
+
+      <label>
+        Noise / Strength
+        <input type="range" id="strengthSlider" min="0.65" max="0.95" step="0.01" value="0.85" />
+        <span id="strengthValue">0.85</span>
+      </label>
+
+      <label>
+        Prompt
+        <input type="text" id="promptInput" value="a realistic face"
+          style="padding:8px;border-radius:8px;border:1px solid #374151;background:#0f172a;color:#fff;min-width:220px;" />
+      </label>
+
+      <button id="runBtn" disabled>Anonymize</button>
+      <button id="resetBtn" disabled>Reset</button>
+    </div>
+
+    <div class="status" id="status">Caricamento modelli face detection...</div>
+
+    <div style="margin-bottom:16px;">
+      <span class="pill">1 volto</span>
+      <span class="pill">crop + blend</span>
+      <span class="pill">placeholder anonymization</span>
+      <span class="pill">hook pronto per SD‑Turbo img2img</span>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <h3>Input</h3>
+        <canvas id="inputCanvas"></canvas>
+        <div class="meta" id="inputMeta">Nessuna immagine caricata.</div>
+      </div>
+
+      <div class="panel">
+        <h3>Output</h3>
+        <canvas id="outputCanvas"></canvas>
+        <div class="meta" id="outputMeta">Nessun output ancora generato.</div>
+      </div>
+    </div>
+
+    <div class="hint">
+      Se la detection non trova il volto al primo colpo, prova con una foto più frontale o con il volto più grande
+      nell’inquadratura.
+    </div>
   </div>
+
+  <!-- face-api.js browser build -->
+  <!-- <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script> -->
+  <script src="./vendor/face-api.min.js"></script>
+  <!-- bundle webpack -->
+  <script type="module" defer src="./dist/index.js"></script>
 </body>
 
 </html>
