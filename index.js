@@ -429,6 +429,7 @@ runBtn.addEventListener("click", async () => {
 			strength,
 			seed,
 		});
+		console.log("Generated faces!");
 
 		setStatus("Reinserisco il volto nell'immagine originale...");
 		const resultCanvas = blendFaceBack(
@@ -441,6 +442,7 @@ runBtn.addEventListener("click", async () => {
 		outputCanvas.height = resultCanvas.height;
 		outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
 		outputCtx.drawImage(resultCanvas, 0, 0);
+		console.log("Inserted face!");
 
 		outputMeta.textContent = `Face box: x=${faceBox.x}, y=${faceBox.y}, w=${faceBox.w}, h=${faceBox.h} | prompt="${prompt}" | seed=${seed}`;
 		setStatus(
