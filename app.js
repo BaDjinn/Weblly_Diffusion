@@ -2,11 +2,11 @@ const faceapi = window.faceapi;
 const ort = window.ort;
 
 if (!faceapi) {
-  throw new Error("face-api.js non caricato dal CDN.");
+	throw new Error("face-api.js non caricato dal CDN.");
 }
 
 if (!ort) {
-  throw new Error("onnxruntime-web non caricato dal CDN.");
+	throw new Error("onnxruntime-web non caricato dal CDN.");
 }
 
 const imageInput = document.getElementById("imageInput");
@@ -36,435 +36,517 @@ let sdTurboReady = false;
 // helpers
 // -------------------------
 function setStatus(msg) {
-  statusEl.textContent = msg;
+	statusEl.textContent = msg;
 }
 
 function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
+	return Math.max(min, Math.min(max, value));
 }
 
 function randomInt(max) {
-  return Math.floor(Math.random() * max);
+	return Math.floor(Math.random() * max);
 }
 
 function setCanvasSizeToImage(canvas, ctx, img) {
-  const width = img.naturalWidth || img.width;
-  const height = img.naturalHeight || img.height;
-  canvas.width = width;
-  canvas.height = height;
-  ctx.clearRect(0, 0, width, height);
-  ctx.drawImage(img, 0, 0, width, height);
+	const width = img.naturalWidth || img.width;
+	const height = img.naturalHeight || img.height;
+	canvas.width = width;
+	canvas.height = height;
+	ctx.clearRect(0, 0, width, height);
+	ctx.drawImage(img, 0, 0, width, height);
 }
 
 function copyCanvas(src, dst, dstCtx) {
-  dst.width = src.width;
-  dst.height = src.height;
-  dstCtx.clearRect(0, 0, dst.width, dst.height);
-  dstCtx.drawImage(src, 0, 0);
+	dst.width = src.width;
+	dst.height = src.height;
+	dstCtx.clearRect(0, 0, dst.width, dst.height);
+	dstCtx.drawImage(src, 0, 0);
 }
 
 function loadImageFromFile(file) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = URL.createObjectURL(file);
-  });
+	return new Promise((resolve, reject) => {
+		const img = new Image();
+		img.onload = () => resolve(img);
+		img.onerror = reject;
+		img.src = URL.createObjectURL(file);
+	});
 }
 
 function supportsWebGPU() {
-  return typeof navigator !== "undefined" && !!navigator.gpu;
+	return typeof navigator !== "undefined" && !!navigator.gpu;
 }
 
 // -------------------------
 // runtime bootstrap
 // -------------------------
 async function initFaceDetection() {
-  await faceapi.nets.ssdMobilenetv1.loadFromUri(`${FACE_MODEL_URL}/ssd_mobilenetv1`);
+	await faceapi.nets.ssdMobilenetv1.loadFromUri(
+		`${FACE_MODEL_URL}/ssd_mobilenetv1`,
+	);
 }
 
 async function initSdTurboSessions() {
-  if (!supportsWebGPU()) {
-    throw new Error("WebGPU non disponibile nel browser.");
-  }
+	if (!supportsWebGPU()) {
+		throw new Error("WebGPU non disponibile nel browser.");
+	}
 
-  ort.env.logLevel = "warning";
+	ort.env.logLevel = "warning";
 
-  const sessionOptions = {
-    executionProviders: ["webgpu"],
-    graphOptimizationLevel: "all",
-  };
-
+	const sessionOptions = {
+		executionProviders: ["webgpu"],
+		graphOptimizationLevel: "all",
+	};
+	/*
   const [textEncoder, unet, vaeDecoder, vaeEncoder] = await Promise.all([
     ort.InferenceSession.create(`${SD_MODEL_BASE}/text_encoder/model.onnx`, sessionOptions),
     ort.InferenceSession.create(`${SD_MODEL_BASE}/unet/model.onnx`, sessionOptions),
     ort.InferenceSession.create(`${SD_MODEL_BASE}/vae_decoder/model.onnx`, sessionOptions),
     ort.InferenceSession.create(`${SD_MODEL_BASE}/vae_encoder/model.onnx`, sessionOptions),
   ]);
+*/
+	const SD_MODEL_SOURCES = {
+		text_encoder: [
+			"/models/sd-turbo/text_encoder/model.onnx",
+			"https://huggingface.co/microsoft/sd-turbo-webnn/resolve/main/text_encoder/model.onnx",
+			"https://huggingface.co/webnn/sd-turbo-webnn/resolve/main/text_encoder/model.onnx",
+		],
+		unet: [
+			"/models/sd-turbo/unet/model.onnx",
+			"https://huggingface.co/microsoft/sd-turbo-webnn/resolve/main/unet/model.onnx",
+			"https://huggingface.co/webnn/sd-turbo-webnn/resolve/main/unet/model.onnx",
+		],
+		vae_decoder: [
+			"/models/sd-turbo/vae_decoder/model.onnx",
+			"https://huggingface.co/microsoft/sd-turbo-webnn/resolve/main/vae_decoder/model.onnx",
+			"https://huggingface.co/webnn/sd-turbo-webnn/resolve/main/vae_decoder/model.onnx",
+		],
+		vae_encoder: [
+			"/models/sd-turbo/vae_encoder/model.onnx",
+			"https://huggingface.co/eyaler/sd-turbo-webnn/resolve/main/vae_encoder/model.onnx",
+		],
+	};
 
-  sdSessions = { textEncoder, unet, vaeDecoder, vaeEncoder };
+	async function createSessionWithFallback(urls, sessionOptions) {
+		let lastError = null;
 
-  console.log("[PATCH 2B] SD sessions ready", {
-    textEncoderInputs: textEncoder.inputNames,
-    textEncoderOutputs: textEncoder.outputNames,
-    unetInputs: unet.inputNames,
-    unetOutputs: unet.outputNames,
-    vaeDecoderInputs: vaeDecoder.inputNames,
-    vaeDecoderOutputs: vaeDecoder.outputNames,
-    vaeEncoderInputs: vaeEncoder.inputNames,
-    vaeEncoderOutputs: vaeEncoder.outputNames,
-  });
+		for (const url of urls) {
+			try {
+				console.log("[PATCH 2B] trying model:", url);
+				return await ort.InferenceSession.create(url, sessionOptions);
+			} catch (err) {
+				console.warn("[PATCH 2B] failed model:", url, err);
+				lastError = err;
+			}
+		}
 
-  sdTurboReady = true;
-  return sdSessions;
+		throw lastError ?? new Error("No valid model source found");
+	}
+
+	const [textEncoder, unet, vaeDecoder, vaeEncoder] = await Promise.all([
+		createSessionWithFallback(SD_MODEL_SOURCES.text_encoder, sessionOptions),
+		createSessionWithFallback(SD_MODEL_SOURCES.unet, sessionOptions),
+		createSessionWithFallback(SD_MODEL_SOURCES.vae_decoder, sessionOptions),
+		createSessionWithFallback(SD_MODEL_SOURCES.vae_encoder, sessionOptions),
+	]);
+
+	sdSessions = { textEncoder, unet, vaeDecoder, vaeEncoder };
+
+	console.log("[PATCH 2B] SD sessions ready", {
+		textEncoderInputs: textEncoder.inputNames,
+		textEncoderOutputs: textEncoder.outputNames,
+		unetInputs: unet.inputNames,
+		unetOutputs: unet.outputNames,
+		vaeDecoderInputs: vaeDecoder.inputNames,
+		vaeDecoderOutputs: vaeDecoder.outputNames,
+		vaeEncoderInputs: vaeEncoder.inputNames,
+		vaeEncoderOutputs: vaeEncoder.outputNames,
+	});
+
+	sdTurboReady = true;
+	return sdSessions;
 }
 
 async function bootstrap() {
-  try {
-    setStatus("Caricamento face detection...");
-    await initFaceDetection();
+	try {
+		setStatus("Caricamento face detection...");
+		await initFaceDetection();
 
-    if (supportsWebGPU()) {
-      setStatus("Caricamento runtime SD-Turbo...");
-      try {
-        await initSdTurboSessions();
-        setStatus("Runtime pronto. Face detection + SD-Turbo bootstrap OK.");
-      } catch (sdErr) {
-        console.warn("[PATCH 2B] SD-Turbo non pronto, fallback placeholder:", sdErr);
-        sdTurboReady = false;
-        setStatus("Face detection pronta. SD-Turbo non disponibile: uso fallback placeholder.");
-      }
-    } else {
-      sdTurboReady = false;
-      setStatus("Face detection pronta. WebGPU non disponibile: uso fallback placeholder.");
-    }
-  } catch (err) {
-    console.error(err);
-    setStatus("Errore nel bootstrap iniziale.");
-  }
+		if (supportsWebGPU()) {
+			setStatus("Caricamento runtime SD-Turbo...");
+			try {
+				await initSdTurboSessions();
+				setStatus("Runtime pronto. Face detection + SD-Turbo bootstrap OK.");
+			} catch (sdErr) {
+				console.warn(
+					"[PATCH 2B] SD-Turbo non pronto, fallback placeholder:",
+					sdErr,
+				);
+				sdTurboReady = false;
+				setStatus(
+					"Face detection pronta. SD-Turbo non disponibile: uso fallback placeholder.",
+				);
+			}
+		} else {
+			sdTurboReady = false;
+			setStatus(
+				"Face detection pronta. WebGPU non disponibile: uso fallback placeholder.",
+			);
+		}
+	} catch (err) {
+		console.error(err);
+		setStatus("Errore nel bootstrap iniziale.");
+	}
 }
 
 // -------------------------
 // detection
 // -------------------------
 async function detectSingleFaceFromCanvas(canvas) {
-  const detection = await faceapi.detectSingleFace(canvas);
-  if (!detection) return null;
+	const detection = await faceapi.detectSingleFace(canvas);
+	if (!detection) return null;
 
-  const { x, y, width, height } = detection.box;
-  const padX = width * FACE_PADDING_RATIO;
-  const padY = height * FACE_PADDING_RATIO;
+	const { x, y, width, height } = detection.box;
+	const padX = width * FACE_PADDING_RATIO;
+	const padY = height * FACE_PADDING_RATIO;
 
-  return {
-    x: Math.floor(clamp(x - padX, 0, canvas.width)),
-    y: Math.floor(clamp(y - padY, 0, canvas.height)),
-    w: Math.floor(clamp(width + 2 * padX, 1, canvas.width)),
-    h: Math.floor(clamp(height + 2 * padY, 1, canvas.height)),
-  };
+	return {
+		x: Math.floor(clamp(x - padX, 0, canvas.width)),
+		y: Math.floor(clamp(y - padY, 0, canvas.height)),
+		w: Math.floor(clamp(width + 2 * padX, 1, canvas.width)),
+		h: Math.floor(clamp(height + 2 * padY, 1, canvas.height)),
+	};
 }
 
-function cropRegionToSquare(sourceCanvas, regionBox, targetSize = FACE_INPUT_SIZE) {
-  const cropCanvas = document.createElement("canvas");
-  cropCanvas.width = targetSize;
-  cropCanvas.height = targetSize;
-  const ctx = cropCanvas.getContext("2d", { willReadFrequently: true });
+function cropRegionToSquare(
+	sourceCanvas,
+	regionBox,
+	targetSize = FACE_INPUT_SIZE,
+) {
+	const cropCanvas = document.createElement("canvas");
+	cropCanvas.width = targetSize;
+	cropCanvas.height = targetSize;
+	const ctx = cropCanvas.getContext("2d", { willReadFrequently: true });
 
-  ctx.drawImage(
-    sourceCanvas,
-    regionBox.x,
-    regionBox.y,
-    regionBox.w,
-    regionBox.h,
-    0,
-    0,
-    targetSize,
-    targetSize
-  );
+	ctx.drawImage(
+		sourceCanvas,
+		regionBox.x,
+		regionBox.y,
+		regionBox.w,
+		regionBox.h,
+		0,
+		0,
+		targetSize,
+		targetSize,
+	);
 
-  return cropCanvas;
+	return cropCanvas;
 }
 
 function drawRegionOverlay(canvas, regionBox) {
-  const overlay = document.createElement("canvas");
-  overlay.width = canvas.width;
-  overlay.height = canvas.height;
-  const ctx = overlay.getContext("2d");
+	const overlay = document.createElement("canvas");
+	overlay.width = canvas.width;
+	overlay.height = canvas.height;
+	const ctx = overlay.getContext("2d");
 
-  ctx.drawImage(canvas, 0, 0);
-  ctx.strokeStyle = "rgba(96,165,250,0.9)";
-  ctx.lineWidth = Math.max(2, Math.floor(canvas.width / 300));
-  ctx.strokeRect(regionBox.x, regionBox.y, regionBox.w, regionBox.h);
+	ctx.drawImage(canvas, 0, 0);
+	ctx.strokeStyle = "rgba(96,165,250,0.9)";
+	ctx.lineWidth = Math.max(2, Math.floor(canvas.width / 300));
+	ctx.strokeRect(regionBox.x, regionBox.y, regionBox.w, regionBox.h);
 
-  return overlay;
+	return overlay;
 }
 
 // -------------------------
 // fallback placeholder
 // -------------------------
 async function runPlaceholderTransform(cropCanvas, { prompt, strength, seed }) {
-  console.log("[PATCH 2B][fallback] Prompt:", prompt, "Strength:", strength, "Seed:", seed);
+	console.log(
+		"[PATCH 2B][fallback] Prompt:",
+		prompt,
+		"Strength:",
+		strength,
+		"Seed:",
+		seed,
+	);
 
-  const out = document.createElement("canvas");
-  out.width = cropCanvas.width;
-  out.height = cropCanvas.height;
-  const ctx = out.getContext("2d", { willReadFrequently: true });
+	const out = document.createElement("canvas");
+	out.width = cropCanvas.width;
+	out.height = cropCanvas.height;
+	const ctx = out.getContext("2d", { willReadFrequently: true });
 
-  ctx.save();
-  ctx.filter = `blur(${Math.max(2, Math.floor(strength * 8))}px) saturate(${0.85 + (1 - strength) * 0.2}) contrast(1.02)`;
-  ctx.drawImage(cropCanvas, 0, 0);
-  ctx.restore();
+	ctx.save();
+	ctx.filter = `blur(${Math.max(2, Math.floor(strength * 8))}px) saturate(${0.85 + (1 - strength) * 0.2}) contrast(1.02)`;
+	ctx.drawImage(cropCanvas, 0, 0);
+	ctx.restore();
 
-  let imageData = ctx.getImageData(0, 0, out.width, out.height);
-  let data = imageData.data;
+	let imageData = ctx.getImageData(0, 0, out.width, out.height);
+	let data = imageData.data;
 
-  let s = seed % 2147483647;
-  if (s <= 0) s += 2147483646;
-  const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+	let s = seed % 2147483647;
+	if (s <= 0) s += 2147483646;
+	const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
 
-  for (let i = 0; i < data.length; i += 4) {
-    const n = (rnd() - 0.5) * 18 * strength;
-    data[i] = clamp(data[i] + n + 4, 0, 255);
-    data[i + 1] = clamp(data[i + 1] + n * 0.4, 0, 255);
-    data[i + 2] = clamp(data[i + 2] - n * 0.8, 0, 255);
-  }
+	for (let i = 0; i < data.length; i += 4) {
+		const n = (rnd() - 0.5) * 18 * strength;
+		data[i] = clamp(data[i] + n + 4, 0, 255);
+		data[i + 1] = clamp(data[i + 1] + n * 0.4, 0, 255);
+		data[i + 2] = clamp(data[i + 2] - n * 0.8, 0, 255);
+	}
 
-  ctx.putImageData(imageData, 0, 0);
+	ctx.putImageData(imageData, 0, 0);
 
-  const mirrorCanvas = document.createElement("canvas");
-  mirrorCanvas.width = out.width;
-  mirrorCanvas.height = out.height;
-  const mctx = mirrorCanvas.getContext("2d");
+	const mirrorCanvas = document.createElement("canvas");
+	mirrorCanvas.width = out.width;
+	mirrorCanvas.height = out.height;
+	const mctx = mirrorCanvas.getContext("2d");
 
-  mctx.save();
-  mctx.translate(out.width, 0);
-  mctx.scale(-1, 1);
-  mctx.drawImage(out, 0, 0);
-  mctx.restore();
+	mctx.save();
+	mctx.translate(out.width, 0);
+	mctx.scale(-1, 1);
+	mctx.drawImage(out, 0, 0);
+	mctx.restore();
 
-  ctx.save();
-  ctx.globalAlpha = 0.12 + strength * 0.08;
-  ctx.drawImage(
-    mirrorCanvas,
-    Math.floor(out.width * 0.08),
-    0,
-    Math.floor(out.width * 0.84),
-    out.height,
-    Math.floor(out.width * 0.08),
-    0,
-    Math.floor(out.width * 0.84),
-    out.height
-  );
-  ctx.restore();
+	ctx.save();
+	ctx.globalAlpha = 0.12 + strength * 0.08;
+	ctx.drawImage(
+		mirrorCanvas,
+		Math.floor(out.width * 0.08),
+		0,
+		Math.floor(out.width * 0.84),
+		out.height,
+		Math.floor(out.width * 0.08),
+		0,
+		Math.floor(out.width * 0.84),
+		out.height,
+	);
+	ctx.restore();
 
-  const warped = document.createElement("canvas");
-  warped.width = out.width;
-  warped.height = out.height;
-  const wctx = warped.getContext("2d");
+	const warped = document.createElement("canvas");
+	warped.width = out.width;
+	warped.height = out.height;
+	const wctx = warped.getContext("2d");
 
-  const strips = 18;
-  const stripH = Math.ceil(out.height / strips);
+	const strips = 18;
+	const stripH = Math.ceil(out.height / strips);
 
-  for (let i = 0; i < strips; i++) {
-    const sy = i * stripH;
-    const sh = Math.min(stripH, out.height - sy);
-    const dx = Math.floor((rnd() - 0.5) * 18 * strength);
-    const dw = out.width + Math.floor((rnd() - 0.5) * 10 * strength);
+	for (let i = 0; i < strips; i++) {
+		const sy = i * stripH;
+		const sh = Math.min(stripH, out.height - sy);
+		const dx = Math.floor((rnd() - 0.5) * 18 * strength);
+		const dw = out.width + Math.floor((rnd() - 0.5) * 10 * strength);
 
-    wctx.drawImage(out, 0, sy, out.width, sh, dx, sy, dw, sh);
-  }
+		wctx.drawImage(out, 0, sy, out.width, sh, dx, sy, dw, sh);
+	}
 
-  wctx.save();
-  const grad = wctx.createRadialGradient(
-    warped.width / 2,
-    warped.height / 2,
-    warped.width * 0.2,
-    warped.width / 2,
-    warped.height / 2,
-    warped.width * 0.62
-  );
-  grad.addColorStop(0, "rgba(255,255,255,0)");
-  grad.addColorStop(1, "rgba(0,0,0,0.07)");
-  wctx.fillStyle = grad;
-  wctx.fillRect(0, 0, warped.width, warped.height);
-  wctx.restore();
+	wctx.save();
+	const grad = wctx.createRadialGradient(
+		warped.width / 2,
+		warped.height / 2,
+		warped.width * 0.2,
+		warped.width / 2,
+		warped.height / 2,
+		warped.width * 0.62,
+	);
+	grad.addColorStop(0, "rgba(255,255,255,0)");
+	grad.addColorStop(1, "rgba(0,0,0,0.07)");
+	wctx.fillStyle = grad;
+	wctx.fillRect(0, 0, warped.width, warped.height);
+	wctx.restore();
 
-  return warped;
+	return warped;
 }
 
 // -------------------------
 // SD-Turbo hook (bootstrap only for now)
 // -------------------------
 async function runSdTurboTransform(cropCanvas, { prompt, strength, seed }) {
-  if (!sdTurboReady || !sdSessions) {
-    throw new Error("SD-Turbo runtime non inizializzato.");
-  }
+	if (!sdTurboReady || !sdSessions) {
+		throw new Error("SD-Turbo runtime non inizializzato.");
+	}
 
-  console.log("[PATCH 2B][sd-turbo] Prompt:", prompt, "Strength:", strength, "Seed:", seed);
-  console.log("[PATCH 2B][sd-turbo] Session bootstrap OK. Integrazione img2img reale da completare.");
+	console.log(
+		"[PATCH 2B][sd-turbo] Prompt:",
+		prompt,
+		"Strength:",
+		strength,
+		"Seed:",
+		seed,
+	);
+	console.log(
+		"[PATCH 2B][sd-turbo] Session bootstrap OK. Integrazione img2img reale da completare.",
+	);
 
-  // Per PATCH 2B manteniamo fallback visuale finché non colleghiamo tokenizer + unet + vae reale
-  return runPlaceholderTransform(cropCanvas, { prompt, strength, seed });
+	// Per PATCH 2B manteniamo fallback visuale finché non colleghiamo tokenizer + unet + vae reale
+	return runPlaceholderTransform(cropCanvas, { prompt, strength, seed });
 }
 
 // -------------------------
 // compositing
 // -------------------------
 function createFeatherMask(w, h) {
-  const mask = document.createElement("canvas");
-  mask.width = w;
-  mask.height = h;
-  const ctx = mask.getContext("2d");
+	const mask = document.createElement("canvas");
+	mask.width = w;
+	mask.height = h;
+	const ctx = mask.getContext("2d");
 
-  const grad = ctx.createRadialGradient(
-    w / 2,
-    h / 2,
-    Math.min(w, h) * 0.18,
-    w / 2,
-    h / 2,
-    Math.min(w, h) * 0.52
-  );
+	const grad = ctx.createRadialGradient(
+		w / 2,
+		h / 2,
+		Math.min(w, h) * 0.18,
+		w / 2,
+		h / 2,
+		Math.min(w, h) * 0.52,
+	);
 
-  grad.addColorStop(0.0, "rgba(255,255,255,1)");
-  grad.addColorStop(0.7, "rgba(255,255,255,0.90)");
-  grad.addColorStop(1.0, "rgba(255,255,255,0)");
+	grad.addColorStop(0.0, "rgba(255,255,255,1)");
+	grad.addColorStop(0.7, "rgba(255,255,255,0.90)");
+	grad.addColorStop(1.0, "rgba(255,255,255,0)");
 
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, w, h);
+	ctx.fillStyle = grad;
+	ctx.fillRect(0, 0, w, h);
 
-  return mask;
+	return mask;
 }
 
 function blendRegionBack(originalCanvas, generatedCanvas, regionBox) {
-  const resultCanvas = document.createElement("canvas");
-  resultCanvas.width = originalCanvas.width;
-  resultCanvas.height = originalCanvas.height;
-  const ctx = resultCanvas.getContext("2d", { willReadFrequently: true });
+	const resultCanvas = document.createElement("canvas");
+	resultCanvas.width = originalCanvas.width;
+	resultCanvas.height = originalCanvas.height;
+	const ctx = resultCanvas.getContext("2d", { willReadFrequently: true });
 
-  ctx.drawImage(originalCanvas, 0, 0);
+	ctx.drawImage(originalCanvas, 0, 0);
 
-  const resized = document.createElement("canvas");
-  resized.width = regionBox.w;
-  resized.height = regionBox.h;
-  const rctx = resized.getContext("2d", { willReadFrequently: true });
-  rctx.drawImage(generatedCanvas, 0, 0, regionBox.w, regionBox.h);
+	const resized = document.createElement("canvas");
+	resized.width = regionBox.w;
+	resized.height = regionBox.h;
+	const rctx = resized.getContext("2d", { willReadFrequently: true });
+	rctx.drawImage(generatedCanvas, 0, 0, regionBox.w, regionBox.h);
 
-  const mask = createFeatherMask(regionBox.w, regionBox.h);
-  const masked = document.createElement("canvas");
-  masked.width = regionBox.w;
-  masked.height = regionBox.h;
-  const mctx = masked.getContext("2d", { willReadFrequently: true });
+	const mask = createFeatherMask(regionBox.w, regionBox.h);
+	const masked = document.createElement("canvas");
+	masked.width = regionBox.w;
+	masked.height = regionBox.h;
+	const mctx = masked.getContext("2d", { willReadFrequently: true });
 
-  mctx.drawImage(resized, 0, 0);
-  mctx.globalCompositeOperation = "destination-in";
-  mctx.drawImage(mask, 0, 0);
+	mctx.drawImage(resized, 0, 0);
+	mctx.globalCompositeOperation = "destination-in";
+	mctx.drawImage(mask, 0, 0);
 
-  ctx.drawImage(masked, regionBox.x, regionBox.y);
-  return resultCanvas;
+	ctx.drawImage(masked, regionBox.x, regionBox.y);
+	return resultCanvas;
 }
 
 // -------------------------
 // UI wiring
 // -------------------------
 strengthSlider.addEventListener("input", () => {
-  strengthValue.textContent = Number(strengthSlider.value).toFixed(2);
+	strengthValue.textContent = Number(strengthSlider.value).toFixed(2);
 });
 
 imageInput.addEventListener("change", async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
+	const file = e.target.files?.[0];
+	if (!file) return;
 
-  try {
-    setStatus("Caricamento immagine...");
-    loadedImage = await loadImageFromFile(file);
+	try {
+		setStatus("Caricamento immagine...");
+		loadedImage = await loadImageFromFile(file);
 
-    setCanvasSizeToImage(inputCanvas, inputCtx, loadedImage);
-    copyCanvas(inputCanvas, outputCanvas, outputCtx);
+		setCanvasSizeToImage(inputCanvas, inputCtx, loadedImage);
+		copyCanvas(inputCanvas, outputCanvas, outputCtx);
 
-    inputMeta.textContent = `Dimensioni: ${inputCanvas.width} × ${inputCanvas.height}`;
-    outputMeta.textContent = sdTurboReady
-      ? "Runtime SD-Turbo bootstrap attivo."
-      : "Fallback placeholder attivo.";
+		inputMeta.textContent = `Dimensioni: ${inputCanvas.width} × ${inputCanvas.height}`;
+		outputMeta.textContent = sdTurboReady
+			? "Runtime SD-Turbo bootstrap attivo."
+			: "Fallback placeholder attivo.";
 
-    runBtn.disabled = false;
-    resetBtn.disabled = false;
+		runBtn.disabled = false;
+		resetBtn.disabled = false;
 
-    setStatus("Immagine caricata. Premi 'Anonymize'.");
-  } catch (err) {
-    console.error(err);
-    setStatus("Errore nel caricamento dell'immagine.");
-  }
+		setStatus("Immagine caricata. Premi 'Anonymize'.");
+	} catch (err) {
+		console.error(err);
+		setStatus("Errore nel caricamento dell'immagine.");
+	}
 });
 
 resetBtn.addEventListener("click", () => {
-  if (!loadedImage) return;
+	if (!loadedImage) return;
 
-  setCanvasSizeToImage(inputCanvas, inputCtx, loadedImage);
-  copyCanvas(inputCanvas, outputCanvas, outputCtx);
-  outputMeta.textContent = "Output resettato.";
-  setStatus("Reset completato.");
+	setCanvasSizeToImage(inputCanvas, inputCtx, loadedImage);
+	copyCanvas(inputCanvas, outputCanvas, outputCtx);
+	outputMeta.textContent = "Output resettato.";
+	setStatus("Reset completato.");
 });
 
 runBtn.addEventListener("click", async () => {
-  if (!loadedImage) {
-    setStatus("Carica prima un'immagine.");
-    return;
-  }
+	if (!loadedImage) {
+		setStatus("Carica prima un'immagine.");
+		return;
+	}
 
-  try {
-    runBtn.disabled = true;
-    setStatus("Cerco la regione...");
-    const regionBox = await detectSingleFaceFromCanvas(inputCanvas);
+	try {
+		runBtn.disabled = true;
+		setStatus("Cerco la regione...");
+		const regionBox = await detectSingleFaceFromCanvas(inputCanvas);
 
-    if (!regionBox) {
-      setStatus("Nessuna regione rilevata. Prova con un’immagine più chiara.");
-      return;
-    }
+		if (!regionBox) {
+			setStatus("Nessuna regione rilevata. Prova con un’immagine più chiara.");
+			return;
+		}
 
-    const overlayCanvas = drawRegionOverlay(inputCanvas, regionBox);
-    copyCanvas(overlayCanvas, inputCanvas, inputCtx);
+		const overlayCanvas = drawRegionOverlay(inputCanvas, regionBox);
+		copyCanvas(overlayCanvas, inputCanvas, inputCtx);
 
-    setStatus("Regione trovata. Eseguo crop...");
-    const cropCanvas = cropRegionToSquare(outputCanvas.width ? outputCanvas : inputCanvas, regionBox, FACE_INPUT_SIZE);
+		setStatus("Regione trovata. Eseguo crop...");
+		const cropCanvas = cropRegionToSquare(
+			outputCanvas.width ? outputCanvas : inputCanvas,
+			regionBox,
+			FACE_INPUT_SIZE,
+		);
 
-    const prompt = promptInput.value || "a realistic face";
-    const strength = Number(strengthSlider.value);
-    const seed = randomInt(1_000_000_000);
+		const prompt = promptInput.value || "a realistic face";
+		const strength = Number(strengthSlider.value);
+		const seed = randomInt(1_000_000_000);
 
-    setStatus(`Trasformazione in corso... (seed ${seed})`);
+		setStatus(`Trasformazione in corso... (seed ${seed})`);
 
-    const generated = sdTurboReady
-      ? await runSdTurboTransform(cropCanvas, { prompt, strength, seed })
-      : await runPlaceholderTransform(cropCanvas, { prompt, strength, seed });
+		const generated = sdTurboReady
+			? await runSdTurboTransform(cropCanvas, { prompt, strength, seed })
+			: await runPlaceholderTransform(cropCanvas, { prompt, strength, seed });
 
-    console.log("[PATCH 2B] transform done");
+		console.log("[PATCH 2B] transform done");
 
-    setStatus("Reinserimento nel canvas finale...");
-    const resultCanvas = blendRegionBack(outputCanvas.width ? outputCanvas : inputCanvas, generated, regionBox);
+		setStatus("Reinserimento nel canvas finale...");
+		const resultCanvas = blendRegionBack(
+			outputCanvas.width ? outputCanvas : inputCanvas,
+			generated,
+			regionBox,
+		);
 
-    outputCanvas.width = resultCanvas.width;
-    outputCanvas.height = resultCanvas.height;
-    outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
-    outputCtx.drawImage(resultCanvas, 0, 0);
+		outputCanvas.width = resultCanvas.width;
+		outputCanvas.height = resultCanvas.height;
+		outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+		outputCtx.drawImage(resultCanvas, 0, 0);
 
-    console.log("[PATCH 2B] output draw done");
+		console.log("[PATCH 2B] output draw done");
 
-    outputMeta.textContent =
-      `Box: x=${regionBox.x}, y=${regionBox.y}, w=${regionBox.w}, h=${regionBox.h}\n` +
-      `prompt="${prompt}"\n` +
-      `seed=${seed}\n` +
-      `mode=${sdTurboReady ? "sd-turbo-bootstrap" : "placeholder-fallback"}`;
+		outputMeta.textContent =
+			`Box: x=${regionBox.x}, y=${regionBox.y}, w=${regionBox.w}, h=${regionBox.h}\n` +
+			`prompt="${prompt}"\n` +
+			`seed=${seed}\n` +
+			`mode=${sdTurboReady ? "sd-turbo-bootstrap" : "placeholder-fallback"}`;
 
-    setStatus(
-      sdTurboReady
-        ? "Completato. Runtime CDN + SD-Turbo bootstrap attivo."
-        : "Completato. Fallback placeholder attivo."
-    );
-  } catch (err) {
-    console.error(err);
-    setStatus("Errore durante la trasformazione. Controlla la console.");
-  } finally {
-    runBtn.disabled = false;
-  }
+		setStatus(
+			sdTurboReady
+				? "Completato. Runtime CDN + SD-Turbo bootstrap attivo."
+				: "Completato. Fallback placeholder attivo.",
+		);
+	} catch (err) {
+		console.error(err);
+		setStatus("Errore durante la trasformazione. Controlla la console.");
+	} finally {
+		runBtn.disabled = false;
+	}
 });
 
 // bootstrap
