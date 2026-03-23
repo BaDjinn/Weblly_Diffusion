@@ -29,7 +29,7 @@ const outputCanvas = document.getElementById("outputCanvas");
 const inputCtx = inputCanvas.getContext("2d", { willReadFrequently: true });
 const outputCtx = outputCanvas.getContext("2d", { willReadFrequently: true });
 
-const FACE_MODEL_URL = "./models/face-api";
+const FACE_MODEL_URL = "/models/face-api";
 const FACE_INPUT_SIZE = 512;
 const FACE_PADDING_RATIO = 0.28;
 
@@ -82,7 +82,7 @@ async function init() {
 	} catch (err) {
 		console.error(err);
 		setStatus(
-			"Errore nel caricamento dei modelli face-api. Controlla la cartella ./models/face-api/ssd_mobilenetv1.",
+			"Errore nel caricamento dei modelli face-api. Controlla la cartella /models/face-api/ssd_mobilenetv1.",
 		);
 	}
 }
